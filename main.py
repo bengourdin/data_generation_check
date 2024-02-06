@@ -1,7 +1,22 @@
 import pandas as pd
 import numpy as np
 import json
+import os
+import seaborn as sns
+import matplotlib.pyplot as plt
 from scipy.stats._stats import _kendall_dis
+from fitter import Fitter, get_common_distributions, get_distributions
+
+
+def read_config(path):
+    with open(path, 'r') as f:
+        config = json.load(f)
+    f.close()
+    parameters = config["variables"]
+    variables = []
+    for variable in parameters:
+        variables.append(variable)
+    return parameters, variables
 
 
 def calculate_somersd(x, y):
@@ -35,9 +50,20 @@ def calculate_somersd(x, y):
     return (SD, dis)
 
 
-if __name__ == '__main__':
-    generated_dataset = pd.read_csv(r'C:\Users\DE129454\Documents\Datengenerierung\chatgbt_generierung_2.csv', sep=",")
-    wanted_correlation = pd.read_csv(r'C:\Users\DE129454\Documents\Datengenerierung\Correlationmatrix.csv', sep=";", decimal=",")
+def get_distribution(data_array):
+    f = Fitter(data_array, distributions=["norm", "expon"]) # check the scipy distribution
+    f.fit()
+    best_json = f.get_best(method= 'sumsquare_error')
+    best_array = []
+    for best in best_json:
+        best_array.append(best)
+    return best_array[0]
+
+def main(input_dir_path, output_dir_path, dataset):
+    print(get_distributions()) # distributions supported by scipy
+    generated_dataset = pd.read_csv(os.path.join(input_dir_path, dataset), sep=",")
+    wanted_correlation = pd.read_csv(os.path.join(input_dir_path, 'Correlationmatrix.csv'), sep=";", decimal=",")
+    parameters, variables = read_config(os.path.join(input_dir_path, 'Statistische_Informationen.json'))
     wanted_correlation.set_index('Unnamed: 0', inplace=True)
     wanted_correlation.index.name = None
     wanted_correlation = wanted_correlation.astype(float)
@@ -47,24 +73,77 @@ if __name__ == '__main__':
     new_correlation = generated_dataset.corr()
     corr_difference = new_correlation.subtract(wanted_correlation)
     corr_difference = corr_difference.abs()
-    csv_dataset = corr_difference.to_csv(r'C:\Users\DE129454\Documents\Datengenerierung\correlation_difference.csv', sep=';', decimal=',')
+    csv_dataset = corr_difference.to_csv(os.path.join(output_dir_path, 'correlation_difference.csv'), sep=';', decimal=',')
     json_file = {}
+    plt.figure()
+    ax = sns.heatmap(corr_difference, annot=True, vmin=0, vmax=1)
+    plt.savefig(os.path.join(output_dir_path, 'correlation_difference.png'), bbox_inches = "tight")
+    somersd_value = []
+    somersd_type = []
+    labels = []
     for col in generated_dataset.columns:
-        median = str(generated_dataset[col].median())
-        min = str(generated_dataset[col].min())
-        max = str(generated_dataset[col].max())
-        q25 = str(generated_dataset[col].quantile(0.25))
-        q75 = str(generated_dataset[col].quantile(0.75))
+        distribution = get_distribution(generated_dataset[col].values)
+        median = round(generated_dataset[col].median(), 3)
+        min = round(generated_dataset[col].min(), 3)
+        max = round(generated_dataset[col].max(), 3)
+        q25 = round(generated_dataset[col].quantile(0.25), 3)
+        q75 = round(generated_dataset[col].quantile(0.75), 3)
+        median_should = parameters[col]["median"]
+        min_should = parameters[col]["min"]
+        max_should = parameters[col]["max"]
+        median_dif = round(abs(median - float(median_should)), 3)
+        min_dif = round(abs(min - float(min_should)), 3)
+        max_dif = round(abs(max - float(max_should)), 3)
+        param_names = []
+        for param in parameters[col]:
+            param_names.append(param)
         if col == "Default Flag":
-            json_file[col] = {"median": median, "min": min, "max": max}
-        else:
+            json_file[col] = {"median": str(median), "median_should": median_should, "median_difference": str(median_dif), "min": str(min), "min_should": min_should, "min_difference": str(min_dif), "max": str(max), "max_should": max_should, "max_difference": str(max_dif), "distribution": distribution}
+        elif "q25" not in param_names:
             (somersd_calc, dist_calc) = calculate_somersd(generated_dataset[col], generated_dataset["Default Flag"])
-            json_file[col] = {"median": median, "min": min, "max": max, "q25": q25, "q75": q75, "somers'd": str(somersd_calc)}
-    
-    with open(r'C:\Users\DE129454\Documents\Datengenerierung\statistics_of_generated.json', "w") as write_file:
+            somersd_calc = round(somersd_calc, 3)
+            somersd_should = parameters[col]["somers'd"]
+            somersd_dif = round(abs(somersd_calc - float(somersd_should)), 3)
+            somersd_value.append(somersd_calc)
+            somersd_type.append('actual')
+            labels.append(col)
+            somersd_value.append(float(somersd_should))
+            somersd_type.append('target')
+            labels.append(col)
+            somersd_value.append(somersd_dif)
+            somersd_type.append('difference')
+            labels.append(col)
+            json_file[col] = {"median": str(median), "median_should": median_should, "median_difference": str(median_dif), "min": str(min), "min_should": min_should, "min_difference": str(min_dif), "max": str(max), "max_should": max_should, "max_difference": str(max_dif), "somers'd": str(somersd_calc), "somers'd_should": somersd_should, "somers'd_difference": str(somersd_dif), "distribution": distribution}
+        else:
+            q25_should = parameters[col]["q25"]
+            q75_should = parameters[col]["q75"]
+            q25_dif = round(abs(q25 - float(q25_should)), 3)
+            q75_dif = round(abs(q75 - float(q75_should)), 3)
+            (somersd_calc, dist_calc) = calculate_somersd(generated_dataset[col], generated_dataset["Default Flag"])
+            somersd_calc = round(somersd_calc, 3)
+            somersd_should = parameters[col]["somers'd"]
+            somersd_dif = round(abs(somersd_calc - float(somersd_should)), 3)
+            somersd_value.append(somersd_calc)
+            somersd_type.append('actual')
+            labels.append(col)
+            somersd_value.append(float(somersd_should))
+            somersd_type.append('target')
+            labels.append(col)
+            somersd_value.append(somersd_dif)
+            somersd_type.append('difference')
+            labels.append(col)
+            json_file[col] = {"median": str(median), "median_should": median_should, "median_difference": str(median_dif), "min": str(min), "min_should": min_should, "min_difference": str(min_dif), "max": str(max), "max_should": max_should, "max_difference": str(max_dif), "q25": str(q25), "q25_should": q25_should, "q25_difference": str(q25_dif), "q75": str(q75), "q75_should": q75_should, "q75_difference": str(q75_dif), "somers'd": str(somersd_calc), "somers'd_should": somersd_should, "somers'd_difference": str(somersd_dif), "distribution": distribution}
+    data = pd.DataFrame({'labels': labels, 'value': somersd_value, 'type': somersd_type})
+    plt.figure()
+    ax = sns.barplot(data=data, x='labels', y='value', hue='type', hue_order=['actual', 'target', 'difference'])
+    plt.xticks(rotation=90)
+    plt.savefig(os.path.join(output_dir_path, 'somers_d.png'), bbox_inches = "tight")
+    with open(os.path.join(output_dir_path, 'statistics_of_generated.json'), "w") as write_file:
         json.dump(json_file, write_file, indent=4)
 
-    print(generated_dataset.head())
-    print(wanted_correlation.head())
-    print(new_correlation.head())
-    print(corr_difference)
+
+if __name__ == '__main__':
+    input_dir_path = r'C:\Users\DE129454\Documents\Datengenerierung'
+    output_dir_path = r'C:\Users\DE129454\Documents\Datengenerierung'
+    dataset = 'chatgbt_generierung_2.csv'
+    main(input_dir_path, output_dir_path, dataset)
